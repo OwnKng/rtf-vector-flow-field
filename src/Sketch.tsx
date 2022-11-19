@@ -1,34 +1,36 @@
-import { useFrame } from "@react-three/fiber"
+import { useFrame, useThree } from "@react-three/fiber"
 import { useMemo, useRef } from "react"
-import { createNoise3D } from "simplex-noise"
+import { createNoise2D } from "simplex-noise"
 import * as THREE from "three"
 import { Vector2 } from "three"
+import fragment from "./shader/fragment.glsl"
+import vertex from "./shader/vertex.glsl"
 
-const noise = createNoise3D()
+const noise = createNoise2D()
 
-const TWO_PI = Math.PI * 2
+const rows = 100
+const cols = 100
 
-const width = 20
-const height = 20
+const createFlowField = (
+  width: number,
+  height: number,
+  rows: number,
+  cols: number
+) =>
+  Array.from({ length: rows * cols }, (_, i) => {
+    const cellWidth = width / cols
+    const cellHeight = height / rows
 
-const rows = 50
-const cols = 50
-const numberOfCells = rows * cols
+    const u = ((i % cols) * cellWidth) / width
+    const v = (Math.floor(i / rows) * cellHeight) / height
 
-const cellWidth = width / cols
-const cellHeight = height / rows
+    const angle = noise(u, v) * Math.PI * 0.5
 
-const grid = Array.from({ length: numberOfCells }, (_, i) => {
-  const u = ((i % cols) * cellWidth) / width
-  const v = (Math.floor(i / rows) * cellHeight) / height
+    const x = Math.cos(angle)
+    const y = Math.sin(angle)
 
-  const angle = noise(u, v, 123) * TWO_PI * 4
-
-  const x = Math.cos(angle)
-  const y = Math.sin(angle)
-
-  return new THREE.Vector2(x, y).setLength(10)
-})
+    return new THREE.Vector2(x, y)
+  })
 
 type particleType = {
   acceleration: Vector2
@@ -58,26 +60,33 @@ const checkEdges = (dimensions: dimensionsType, particle: particleType) => {
   const { width, height } = dimensions
 
   if (particle.position.x > width) {
-    particle.velocity.x = 0
+    particle.velocity.multiplyScalar(0)
   }
 
   if (particle.position.x < 0) {
-    particle.velocity.x = 0
+    particle.velocity.multiplyScalar(0)
   }
 
   if (particle.position.y > height) {
-    particle.velocity.y = 0
+    particle.velocity.multiplyScalar(0)
   }
 
   if (particle.position.y < 0) {
-    particle.velocity.y = 0
+    particle.velocity.multiplyScalar(0)
   }
 }
 
-const Particle = (particle: particleType) => {
+type ParticleProps = {
+  particle: particleType
+  grid: THREE.Vector2[]
+}
+
+const Particle = ({ particle, grid }: ParticleProps) => {
+  const { viewport } = useThree()
+
   const follow = () => {
-    const x = Math.floor(particle.position.x / cellWidth)
-    const y = Math.floor(particle.position.y / cellHeight)
+    const x = Math.floor(particle.position.x / (viewport.width / cols))
+    const y = Math.floor(particle.position.y / (viewport.height / rows))
 
     const index = x + y * cols
     const force = grid[index] || new THREE.Vector2(0, 0)
@@ -87,48 +96,64 @@ const Particle = (particle: particleType) => {
   }
 
   const drawCurve = (origin: THREE.Vector2) =>
-    Array.from({ length: 250 }, () => {
+    Array.from({ length: 200 }, () => {
       follow()
       updatePosition(particle)
-      checkEdges({ width, height }, particle)
+      checkEdges({ width: viewport.width, height: viewport.height }, particle)
 
-      return new THREE.Vector3(
-        particle.position.x,
-        particle.position.y,
-        particle.velocity.length() * 5
-      )
+      return new THREE.Vector3(particle.position.x, particle.position.y, 0)
     })
 
   const points = drawCurve(particle.position)
   const curve = new THREE.CatmullRomCurve3(points)
 
-  const geometry = new THREE.TubeGeometry(curve, 250, 0.01, 8, false)
-  const material = new THREE.MeshBasicMaterial()
+  const geometry = new THREE.TubeGeometry(curve, 64, 0.01, 3, false)
+  const material = new THREE.ShaderMaterial({
+    vertexShader: vertex,
+    fragmentShader: fragment,
+    uniforms: {
+      uTime: { value: 0 },
+      uOffset: { value: Math.random() },
+      uSpeed: { value: 1 + Math.random() },
+    },
+    blending: THREE.AdditiveBlending,
+  })
+
+  useFrame(
+    ({ clock }) => (material.uniforms.uTime.value = clock.getElapsedTime())
+  )
 
   return <primitive object={new THREE.Mesh(geometry, material)} />
 }
 
 export default function Sketch() {
+  const { viewport } = useThree()
+
   const particles = useMemo(
     () =>
-      Array.from({ length: 500 }, () => ({
+      Array.from({ length: 2500 }, () => ({
         position: new THREE.Vector2(
-          Math.random() * width,
-          Math.random() * height
+          Math.random() * viewport.width,
+          Math.random() * viewport.height
         ),
         velocity: new THREE.Vector2().random(),
         acceleration: new THREE.Vector2(0, 0),
-        maxSpeed: 0.1,
-        maxForce: 0.01,
+        maxSpeed: 0.015,
+        maxForce: 0.025,
       })),
     []
   )
 
+  const flowField = useMemo(
+    () => createFlowField(viewport.width, viewport.height, rows, cols),
+    [viewport]
+  )
+
   return (
-    <>
-      {particles.map((p) => (
-        <Particle {...p} />
+    <group position={[-viewport.width * 0.5, -viewport.height * 0.5, 0]}>
+      {particles.map((p, i) => (
+        <Particle key={`particle-${i}`} particle={p} grid={flowField} />
       ))}
-    </>
+    </group>
   )
 }
